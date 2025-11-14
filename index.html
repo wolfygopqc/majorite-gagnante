@@ -687,14 +687,17 @@
                 const gameState = snapshot.val();
                 if (!gameState) return;
                 
-                currentGameState = gameState;
-                handleGameStateChange(gameState);
-
-                if (gameState.state === 'voting' || gameState.state === 'reveal') {
-                    isSpectator = true;
-                } else if (gameState.state === 'lobby') {
+                // Si le jeu passe du lobby au vote, tous les joueurs présents deviennent des participants.
+                if (currentGameState.state === 'lobby' && gameState.state === 'voting') {
                     isSpectator = false;
                 }
+                // Si un joueur arrive et que le jeu est déjà en cours (pas dans le lobby), il devient spectateur.
+                else if (!currentGameState.state && gameState.state !== 'lobby') {
+                    isSpectator = true;
+                }
+
+                currentGameState = gameState;
+                handleGameStateChange(gameState);
             });
         }
 
@@ -765,12 +768,10 @@
                     btn.classList.add('selected');
                 }
                 btn.onclick = () => {
-                    if (!localPlayerIsReady) {
-                        localPlayerThemeVote = theme;
-                        set(ref(database, `themeVotes/${localPlayer.id}`), theme);
-                        document.querySelectorAll('.theme-btn').forEach(b => b.classList.remove('selected'));
-                        btn.classList.add('selected');
-                    }
+                    localPlayerThemeVote = theme;
+                    set(ref(database, `themeVotes/${localPlayer.id}`), theme);
+                    document.querySelectorAll('.theme-btn').forEach(b => b.classList.remove('selected'));
+                    btn.classList.add('selected');
                 };
                 themeContainer.appendChild(btn);
             });
@@ -921,7 +922,7 @@
             if (isHost) {
                 const startGameBtn = document.getElementById('start-game-btn');
                 const forceStartBtn = document.getElementById('force-start-btn');
-                if (onlinePlayers.length >= 2 && readyPlayers === onlinePlayers) {
+                if (onlinePlayers >= 2 && readyPlayers === onlinePlayers) {
                     startGameBtn.style.display = 'inline-block';
                     forceStartBtn.style.display = 'none';
                 } else {
@@ -1043,7 +1044,7 @@
                 const players = playersSnap.val() || {};
                 const onlinePlayers = Object.values(players).filter(p => p.isOnline && !p.kicked);
                 const readyPlayers = onlinePlayers.filter(p => p.isReady);
-            } 
+            }
         }
 
         async function startNewRound() {
@@ -1052,12 +1053,8 @@
             if (gameMasterInterval) clearInterval(gameMasterInterval);
             gameMasterInterval = null;
 
-             for (let i = 3; i >= 1; i--) {
-                await set(ref(database, 'game/countdown'), i.toString());
-                await new Promise(resolve => setTimeout(resolve, 1000));
-            }
-            await set(ref(database, 'game/countdown'), null);
-            await set(ref(database, 'game/state'), 'voting');
+            // Petite pause pour laisser le temps à l'animation de transition
+            await new Promise(resolve => setTimeout(resolve, 1000));
  
              const themeVotesSnap = await get(ref(database, 'themeVotes'));
              const themeVotes = themeVotesSnap.val() || {};
@@ -1069,8 +1066,22 @@
  
              const currentRoundNumber = (currentGameState.currentRoundNumber || 0) + 1;
              const totalRounds = currentGameState.totalRounds || 5;
-             const questionPool = questions[winningTheme];
-             const question = questionPool[Math.floor(Math.random() * questionPool.length)];
+
+             const usedQuestionsByTheme = currentGameState.usedQuestions || {};
+             const usedQuestionsForThisTheme = usedQuestionsByTheme[winningTheme] || [];
+             let availableQuestions = questions[winningTheme].filter(q => !usedQuestionsForThisTheme.includes(q.q));
+ 
+             if (availableQuestions.length === 0) {
+                 availableQuestions = questions[winningTheme];
+                 usedQuestionsByTheme[winningTheme] = [];
+             }
+ 
+             const question = availableQuestions[Math.floor(Math.random() * availableQuestions.length)];
+ 
+             if (!usedQuestionsByTheme[winningTheme]) {
+                 usedQuestionsByTheme[winningTheme] = [];
+             }
+             usedQuestionsByTheme[winningTheme].push(question.q);
  
              const roundId = 'round_' + Date.now();
              await set(ref(database, 'game'), {
@@ -1081,7 +1092,8 @@
                  totalRounds: totalRounds,
                  currentTheme: winningTheme,
                  currentRoundId: roundId,
-                 currentQuestion: question
+                 currentQuestion: question,
+                 usedQuestions: usedQuestionsByTheme
              });
              await set(ref(database, `rounds/${roundId}`), { votes: {} });
  
@@ -1119,26 +1131,30 @@
                 const finalPlayersSnap = await get(ref(database, 'players'));
                 const finalPlayers = finalPlayersSnap.val() || {};
                 const winner = Object.values(finalPlayers).filter(p => p.isOnline && !p.kicked).sort((a, b) => b.score - a.score)[0];
-                await set(ref(database, 'game'), { state: 'gameover', winner: winner });
+                await set(ref(database, 'game'), { ...currentGameState, state: 'gameover', winner: winner });
                 await new Promise(resolve => setTimeout(resolve, 10000));
-             }
 
-             await set(ref(database, 'game'), { 
-                hostId: localPlayer.id, 
-                state: 'lobby',
-                totalRounds: totalRounds
-            });
-             await set(ref(database, 'themeVotes'), {});
-             const playersForResetSnap = await get(ref(database, 'players'));
-             const playersForReset = playersForResetSnap.val() || {};
-             for (const playerId in playersForReset) {
-                 if (playersForReset[playerId].isOnline && !playersForReset[playerId].kicked) {
-                     await set(ref(database, `players/${playerId}/isReady`), false);
-                 }
-             }
-
-            if (gameMasterInterval) clearInterval(gameMasterInterval);
-            gameMasterInterval = setInterval(gameMasterLoop, 5000);
+                // La partie est finie, on retourne au lobby
+                await set(ref(database, 'game'), { 
+                    hostId: localPlayer.id, 
+                    state: 'lobby',
+                    totalRounds: totalRounds,
+                    usedQuestions: {} // Réinitialiser les questions utilisées pour la prochaine partie
+                });
+                await set(ref(database, 'themeVotes'), {});
+                const playersForResetSnap = await get(ref(database, 'players'));
+                const playersForReset = playersForResetSnap.val() || {};
+                for (const playerId in playersForReset) {
+                    if (playersForReset[playerId].isOnline && !playersForReset[playerId].kicked) {
+                        await set(ref(database, `players/${playerId}/isReady`), false);
+                    }
+                }
+                if (gameMasterInterval) clearInterval(gameMasterInterval);
+                gameMasterInterval = setInterval(gameMasterLoop, 5000);
+            } else {
+                // La partie n'est pas finie, on lance la manche suivante
+                startNewRound();
+            }
         }
 
         function updateHostControlsVisibility() {
