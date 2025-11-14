@@ -1069,22 +1069,8 @@
  
              const currentRoundNumber = (currentGameState.currentRoundNumber || 0) + 1;
              const totalRounds = currentGameState.totalRounds || 5;
-
-             const usedQuestionsByTheme = currentGameState.usedQuestions || {};
-             const usedQuestionsForThisTheme = usedQuestionsByTheme[winningTheme] || [];
-             let availableQuestions = questions[winningTheme].filter(q => !usedQuestionsForThisTheme.includes(q.q));
- 
-             if (availableQuestions.length === 0) {
-                 availableQuestions = questions[winningTheme];
-                 usedQuestionsByTheme[winningTheme] = [];
-             }
- 
-             const question = availableQuestions[Math.floor(Math.random() * availableQuestions.length)];
- 
-             if (!usedQuestionsByTheme[winningTheme]) {
-                 usedQuestionsByTheme[winningTheme] = [];
-             }
-             usedQuestionsByTheme[winningTheme].push(question.q);
+             const questionPool = questions[winningTheme];
+             const question = questionPool[Math.floor(Math.random() * questionPool.length)];
  
              const roundId = 'round_' + Date.now();
              await set(ref(database, 'game'), {
@@ -1095,8 +1081,7 @@
                  totalRounds: totalRounds,
                  currentTheme: winningTheme,
                  currentRoundId: roundId,
-                 currentQuestion: question,
-                 usedQuestions: usedQuestionsByTheme
+                 currentQuestion: question
              });
              await set(ref(database, `rounds/${roundId}`), { votes: {} });
  
@@ -1141,8 +1126,7 @@
              await set(ref(database, 'game'), { 
                 hostId: localPlayer.id, 
                 state: 'lobby',
-                totalRounds: totalRounds,
-                usedQuestions: currentRoundNumber >= totalRounds ? {} : usedQuestionsByTheme
+                totalRounds: totalRounds
             });
              await set(ref(database, 'themeVotes'), {});
              const playersForResetSnap = await get(ref(database, 'players'));
